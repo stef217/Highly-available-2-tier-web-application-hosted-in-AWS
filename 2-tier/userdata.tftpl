@@ -1,0 +1,88 @@
+#!/bin/bash
+
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+echo "Starting deployment script as ec2-user service..."
+
+dnf update -y
+dnf install -y python3-pip python3-devel gcc mariadb105-devel
+
+pip3 install flask flask-sqlalchemy pymysql
+
+cat <<EOF > /home/ec2-user/app.py
+from flask import Flask, jsonify
+from flask_sqlalchemy import SQLAlchemy
+import os
+import time  
+
+app = Flask(__name__)
+
+DB_USER = "${db_user}"
+DB_PASS = """${db_pass}"""
+DB_HOST = "${db_endpoint}"
+DB_NAME = "${db_name}"
+
+app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:3306/{DB_NAME}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+
+@app.route('/')
+def index():
+    return f"<h1>App is running on ASG!</h1><p>Task completed by Stefan Dimitrov.</p>"
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy"}), 200
+
+if __name__ == "__main__": 
+    connected = False
+    attempts = 0
+    while not connected and attempts < 15:
+        try:
+            with app.app_context():
+                db.create_all()
+            connected = True
+            print("Successfully connected to DB and created tables.")
+        except Exception as e:
+            attempts += 1
+            print(f"Attempt {attempts}: DB not ready yet ({e}). Waiting 10s...")
+            time.sleep(10)
+    
+    app.run(host='0.0.0.0', port=80)
+EOF
+
+chown ec2-user:ec2-user /home/ec2-user/app.py
+
+cat <<EOF > /etc/systemd/system/flaskapp.service
+[Unit]
+Description=Flask Application Service (Run as ec2-user)
+After=network.target
+
+[Service]
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user
+ExecStart=/usr/bin/python3 /home/ec2-user/app.py
+Restart=always
+RestartSec=5
+
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+StandardOutput=append:/home/ec2-user/app.log
+StandardError=append:/home/ec2-user/app.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable flaskapp
+systemctl start flaskapp
+
+echo "Deployment finished! Service is running as ec2-user."
