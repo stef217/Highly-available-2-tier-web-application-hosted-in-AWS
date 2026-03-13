@@ -73,7 +73,7 @@ resource "aws_sns_topic" "alerts" {
 resource "aws_sns_topic_subscription" "email_alerts" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
-  endpoint  = "stefmd21@gmail.com"
+  endpoint  = "example@gmail.com"
 }
 
 resource "aws_cloudwatch_metric_alarm" "high_requests" {
